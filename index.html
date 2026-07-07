@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Summit Physics: 3D Precision Climb</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #050510;
+            font-family: 'Courier New', Courier, monospace;
+            user-select: none;
+        }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #fff;
+            text-shadow: 2px 2px 4px #000;
+            pointer-events: none;
+        }
+        .bar-container {
+            width: 200px;
+            height: 15px;
+            background: rgba(255,255,255,0.2);
+            border: 2px solid #fff;
+            margin-top: 5px;
+        }
+        #stamina-bar {
+            width: 100%;
+            height: 100%;
+            background: #2ecc71;
+            transition: width 0.1s ease;
+        }
+        #controls-panel {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0,0,0,0.7);
+            padding: 15px;
+            border-radius: 8px;
+            color: #fff;
+            text-align: center;
+            font-size: 14px;
+            pointer-events: none;
+            border: 1px solid #34495e;
+        }
+        #alert {
+            position: absolute;
+            top: 40%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #e74c3c;
+            font-size: 40px;
+            font-weight: bold;
+            display: none;
+            text-shadow: 3px 3px 6px #000;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <h2>ALTITUDE: <span id="height-txt">0</span>m</h2>
+        <div>STAMINA (Grip Strength)</div>
+        <div class="bar-container"><div id="stamina-bar"></div></div>
+        <h3 id="wind-txt" style="color: #3498db;">WIND: CALM</h3>
+    </div>
+
+    <div id="alert">SLIPPED! FALLING!</div>
+
+    <div id="controls-panel">
+        <strong>[W, A, S, D]</strong> Lean / Move Body &nbsp;|&nbsp; 
+        <strong>[Left Click]</strong> Hold Left Hand &nbsp;|&nbsp; 
+        <strong>[Right Click]</strong> Hold Right Hand<br>
+        <span style="color: #f1c40f;">Alternate hands to scale the tower. Release both or run out of stamina, and you fall!</span>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <script>
+        // --- Engine Setups ---
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x1a1a2e, 0.015);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // --- Environmental Lights ---
+        const ambientLight = new THREE.AmbientLight(0x404050, 1.5);
+        scene.add(ambientLight);
+
+        const sunLight = new THREE.DirectionalLight(0xffffff, 1.0);
+        sunLight.position.set(10, 50, 10);
+        scene.add(sunLight);
+
+        // --- Game Variables ---
+        let stamina = 100;
+        let highestClimb = 0;
+        let isFalling = false;
+        let windForce = 0;
+        let clock = new THREE.Clock();
+
+        const keys = { w: false, a: false, s: false, d: false };
+        const mouse = { left: false, right: false };
+
+        // --- Constructing the Climbable Structure ---
+        const towerGroup = new THREE.Group();
+        scene.add(towerGroup);
+
+        // Build a massive jagged mountain spire out of blocks
+        const holdPositions = [];
+        for (let i = 0; i < 60; i++) {
+            const hGeo = new THREE.BoxGeometry(
+                3 + Math.random() * 2, 
+                1.5, 
+                3 + Math.random() * 2
+            );
+            const hMat = new THREE.MeshStandardMaterial({ 
+                color: i % 2 === 0 ? 0x4a5568 : 0x2d3748, 
+                roughness: 0.9 
+            });
+            const block = new THREE.Mesh(hGeo, hMat);
+            
+            // Spiral upward layout design
+            block.position.y = i * 4;
+            block.position.x = Math.sin(i * 0.5) * 2;
+            block.position.z = Math.cos(i * 0.5) * 2;
+            
+            towerGroup.add(block);
+            holdPositions.push(block.position.clone());
+        }
+
+        // --- The Climber Entity Object ---
+        const climber = new THREE.Group();
+        climber.position.set(0, 1, 4);
+        scene.add(climber);
+
+        // Climber torso
+        const bodyGeo = new THREE.CapsuleGeometry(0.4, 0.8, 4, 8);
+        const bodyMat = new THREE.MeshStandardMaterial({ color: #e67e22, roughness: 0.5 });
+        const bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
+        bodyMesh.rotation.x = Math.PI / 2;
+        climber.add(bodyMesh);
+
+        // Hands markers
+        const handMat = new THREE.MeshBasicMaterial({ color: #f1c40f });
+        const leftHand = new THREE.Mesh(new THREE.SphereGeometry(0.15, 8, 8), handMat);
+        const rightHand = new THREE.Mesh(new THREE.SphereGeometry(0.15, 8, 8), handMat);
+        leftHand.position.set(-0.6, 0.5, -0.2);
+        rightHand.position.set(0.6, 0.5, -0.2);
+        climber.add(leftHand);
+        climber.add(rightHand);
+
+        // --- Input Listeners ---
+        window.addEventListener('keydown', (e) => { if(keys.hasOwnProperty(e.key.toLowerCase())) keys[e.key.toLowerCase()] = true; });
+        window.addEventListener('keyup', (e) => { if(keys.hasOwnProperty(e.key.toLowerCase())) keys[e.key.toLowerCase()] = false; });
+        
+        window.addEventListener('mousedown', (e) => {
+            if (e.button === 0) mouse.left = true;
+            if (e.button === 2) mouse.right = true;
+        });
+        window.addEventListener('mouseup', (e) => {
+            if (e.button === 0) mouse.left = false;
+            if (e.button === 2) mouse.right = false;
+        });
+        window.addEventListener('contextmenu', e => e.preventDefault()); // Prevent right click context menu
+
+        // --- Game Update Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            const time = clock.getElapsedTime();
+
+            // 1. Dynamic Weather Calculation (Wind Simulation)
+            windForce = Math.sin(time * 0.5) * Math.cos(time * 2) * 4;
+            if (Math.abs(windForce) > 2.5) {
+                document.getElementById('wind-txt').innerText = "WIND: GALE FORCE";
+                document.getElementById('wind-txt').style.color = "#e74c3c";
+            } else {
+                document.getElementById('wind-txt').innerText = "WIND: MODERATE";
+                document.getElementById('wind-txt').style.color = "#3498db";
+            }
+
+            // 2. Physics & Control Logic
+            const secureGrip = mouse.left || mouse.right;
+
+            if (isFalling) {
+                climber.position.y -= 15 * delta; // Terminal velocity gravity fall
+                climber.position.x += windForce * 0.5 * delta;
+                
+                if (climber.position.y <= 1) {
+                    climber.position.set(0, 1, 4);
+                    isFalling = false;
+                    stamina = 100;
+                    document.getElementById('alert').style.display = 'none';
+                }
+            } else if (!secureGrip) {
+                // Falling condition trigger if no mouse grips are held down
+                isFalling = true;
+                document.getElementById('alert').style.display = 'block';
+            } else {
+                // Handle Movement Controls
+                let moveSpeed = 3 * delta;
+                
+                if (keys.w) climber.position.y += moveSpeed;
+                if (keys.s) climber.position.y -= moveSpeed;
+                if (keys.a) climber.position.x -= moveSpeed;
+                if (keys.d) climber.position.x += moveSpeed;
+
+                // Push climber away from center via environmental wind load
+                climber.position.x += windForce * delta;
+
+                // Stamina drain formula based on mechanics usage
+                let staminaDrain = 4; // Constant baseline strain
+                if (mouse.left && mouse.right) staminaDrain = 2; // Hanging on two hands rests muscles slightly
+                if (keys.w || keys.a || keys.s || keys.d) staminaDrain = 12; // Moving exerts more energy
+
+                stamina -= staminaDrain * delta;
+
+                if (stamina <= 0) {
+                    stamina = 0;
+                    isFalling = true;
+                    document.getElementById('alert').style.display = 'block';
+                }
+            }
+
+            // Regenerate stamina slowly if completely resting safely on stable platforms
+            if (!isFalling && climber.position.y < 2 && secureGrip) {
+                stamina = Math.min(100, stamina + 20 * delta);
+            }
+
+            // Dynamic Hand visuals handling
+            leftHand.position.y = mouse.left ? 0.7 : 0.2 + Math.sin(time * 5) * 0.1;
+            rightHand.position.y = mouse.right ? 0.7 : 0.2 + Math.cos(time * 5) * 0.1;
+
+            // Update UI Score Metric HUD components
+            highestClimb = Math.max(highestClimb, Math.floor(climber.position.y));
+            document.getElementById('height-txt').innerText = highestClimb;
+            document.getElementById('stamina-bar').style.width = `${stamina}%`;
+
+            // Color code stamina indicator dynamically
+            if (stamina < 30) document.getElementById('stamina-bar').style.backgroundColor = '#e74c3c';
+            else if (stamina < 60) document.getElementById('stamina-bar').style.backgroundColor = '#f1c40f';
+            else document.getElementById('stamina-bar').style.backgroundColor = '#2ecc71';
+
+            // 3. Third-Person Camera Tracking Loop Setup
+            camera.position.x = climber.position.x;
+            camera.position.y = climber.position.y + 3;
+            camera.position.z = climber.position.z + 6;
+            camera.lookAt(climber.position.x, climber.position.y + 1, climber.position.z);
+
+            renderer.render(scene, camera);
+        }
+
+        // --- Window Resizing ---
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>
